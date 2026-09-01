@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FIN 411 · CAL reveal</title>
+  <style>
+    :root {
+      --purple: #4f2d7f;
+      --ink: #1a1523;
+      --muted: #5c5566;
+      --line: #ddd7e8;
+      --bg: #f4f2f7;
+      --card: #fff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.85rem 1.1rem;
+      background: var(--card);
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+    header h1 {
+      font-size: 1.05rem;
+      margin: 0 1rem 0 0;
+      font-weight: 650;
+    }
+    .count { font-variant-numeric: tabular-nums; color: var(--muted); }
+    .sp { flex: 1; }
+    button, select {
+      font: inherit;
+      border-radius: 0.55rem;
+      padding: 0.45rem 0.8rem;
+      border: 1px solid var(--line);
+      background: #fff;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--purple);
+      border-color: var(--purple);
+      color: #fff;
+      font-weight: 650;
+    }
+    button.primary:disabled { opacity: 0.45; cursor: not-allowed; }
+    main {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      min-height: calc(100vh - 58px);
+    }
+    aside {
+      padding: 1rem;
+      border-right: 1px solid var(--line);
+      background: var(--card);
+    }
+    aside p { font-size: 0.88rem; color: var(--muted); margin: 0.35rem 0 0.8rem; }
+    .url {
+      font-size: 0.82rem;
+      word-break: break-all;
+      background: var(--bg);
+      padding: 0.55rem 0.6rem;
+      border-radius: 0.45rem;
+      margin: 0.5rem 0;
+    }
+    #qr { display: block; width: 180px; height: 180px; margin: 0.4rem 0 0.7rem; background: #fff; }
+    .stage { padding: 0.8rem 1rem 1rem; }
+    svg { width: 100%; height: calc(100vh - 90px); max-height: 720px; background: #fff; border-radius: 0.7rem; border: 1px solid var(--line); }
+    .legend { font-size: 13px; fill: #1a1523; font-weight: 700; }
+    @media (max-width: 840px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      svg { height: 62vh; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Capital allocation line</h1>
+    <label>Section
+      <select id="section">
+        <option value="8:00">8:00 a.m.</option>
+        <option value="1:00">1:00 p.m.</option>
+        <option value="all">Both</option>
+      </select>
+    </label>
+    <span class="count" id="count">0 in</span>
+    <span class="sp"></span>
+    <button type="button" id="reset">Reset section</button>
+    <button type="button" class="primary" id="reveal">Reveal dots</button>
+  </header>
+  <main>
+    <aside>
+      <strong>Students join here</strong>
+      <img id="qr" alt="QR code for student page" />
+      <div class="url" id="join"></div>
+    </aside>
+    <div class="stage">
+      <svg id="cal" viewBox="0 0 900 560" role="img" aria-label="Capital allocation line"></svg>
+    </div>
+  </main>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="store.js"></script>
+  <script>
+    const RF = 0.05, ER = 0.13, SIG = 0.20;
+    let rows = [];
+    let revealed = false;
+
+    const xPad = [80, 860], yPad = [500, 48];
+    const sMin = 0, sMax = 0.30, rMin = 0, rMax = 0.185;
+    const yCap = 1.5;
+
+    function xOf(sigma) {
+      return xPad[0] + (sigma - sMin) / (sMax - sMin) * (xPad[1] - xPad[0]);
+    }
+    function yOf(ret) {
+      return yPad[0] + (ret - rMin) / (rMax - rMin) * (yPad[1] - yPad[0]);
+    }
+    function pt(y) {
+      return { x: xOf(y * SIG), y: yOf(RF + y * (ER - RF)) };
+    }
+
+    async function setupJoin() {
+      let url = Fin411Store.studentUrl();
+      if (!Fin411Store.usingCloud()) {
+        try {
+          const res = await fetch("/api/info");
+          if (res.ok) {
+            const info = await res.json();
+            if (info.student_url) url = info.student_url;
+          }
+        } catch (e) { /* file:// fallback */ }
+      }
+      document.getElementById("join").textContent = url;
+      document.getElementById("qr").src =
+        "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" +
+        encodeURIComponent(url);
+    }
+
+    function draw() {
+      const section = document.getElementById("section").value;
+      const data = rows.filter((r) => section === "all" || r.section === section);
+      document.getElementById("count").textContent =
+        data.length + " in" + (revealed ? " · showing" : " · hidden");
+
+      const end = pt(yCap);
+      const rf = pt(0);
+      const P = pt(1);
+
+      const ticksS = [0, 0.10, 0.20, 0.30];
+      const ticksR = [0, 0.05, 0.10, 0.15];
+
+      let axis = "";
+      for (const s of ticksS) {
+        axis += `<line x1="${xOf(s)}" y1="${yPad[0]}" x2="${xOf(s)}" y2="${yPad[0] + 7}" stroke="#111" stroke-width="2" />`;
+        axis += `<text x="${xOf(s)}" y="${yPad[0] + 24}" text-anchor="middle" class="legend">${Math.round(s * 100)}%</text>`;
+      }
+      for (const r of ticksR) {
+        axis += `<line x1="${xPad[0] - 7}" y1="${yOf(r)}" x2="${xPad[0]}" y2="${yOf(r)}" stroke="#111" stroke-width="2" />`;
+        axis += `<text x="${xPad[0] - 12}" y="${yOf(r) + 4}" text-anchor="end" class="legend">${Math.round(r * 100)}%</text>`;
+      }
+
+      let dots = "";
+      if (revealed) {
+        const MERGE = 24;
+        const groups = [];
+        data.forEach((d) => {
+          const p = pt(Math.min(Number(d.y) || 0, yCap));
+          const g = groups.find((g) => Math.hypot(g.x - p.x, g.y - p.y) < MERGE);
+          if (g) {
+            const n = g.n + 1;
+            g.x = (g.x * g.n + p.x) / n;
+            g.y = (g.y * g.n + p.y) / n;
+            g.n = n;
+          } else {
+            groups.push({ x: p.x, y: p.y, n: 1 });
+          }
+        });
+        for (const g of groups) {
+          const r = 7 * Math.sqrt(g.n);
+          dots += `<circle cx="${g.x}" cy="${g.y}" r="${r}" fill="#4f2d7f" />`;
+          if (g.n > 1) {
+            dots += `<text x="${g.x}" y="${g.y + 5}" text-anchor="middle" font-size="${Math.min(16, 8 + 2 * g.n)}" font-weight="700" fill="#fff">${g.n}</text>`;
+          }
+        }
+      }
+
+      document.getElementById("cal").innerHTML = `
+        <text x="450" y="28" text-anchor="middle" font-size="16" font-weight="700">Possible Combinations of P and the Risk-Free Asset</text>
+        <text x="${(xPad[0] + xPad[1]) / 2}" y="548" text-anchor="middle" class="legend">Standard Deviation (σ)</text>
+        <text x="22" y="280" text-anchor="middle" class="legend" transform="rotate(-90 22 280)">Expected Return</text>
+        <line x1="${xPad[0]}" y1="${yPad[0]}" x2="${xPad[1]}" y2="${yPad[0]}" stroke="#111" stroke-width="2.5" />
+        <line x1="${xPad[0]}" y1="${yPad[0]}" x2="${xPad[0]}" y2="${yPad[1]}" stroke="#111" stroke-width="2.5" />
+        ${axis}
+        <line x1="${rf.x}" y1="${rf.y}" x2="${end.x}" y2="${end.y}" stroke="#4f2d7f" stroke-width="3" />
+        <circle cx="${rf.x}" cy="${rf.y}" r="5" fill="#fff" stroke="#4f2d7f" stroke-width="2.5" />
+        <circle cx="${P.x}" cy="${P.y}" r="6" fill="#4f2d7f" />
+        <text x="${rf.x + 12}" y="${rf.y + 16}" font-size="16" font-weight="700">r<tspan dy="4" font-size="11">f</tspan></text>
+        <text x="${P.x - 10}" y="${P.y - 10}" font-size="15" font-weight="700" text-anchor="end">P</text>
+        ${dots}
+      `;
+    }
+
+    document.getElementById("section").onchange = draw;
+    document.getElementById("reveal").onclick = () => {
+      revealed = true;
+      document.getElementById("reveal").disabled = true;
+      draw();
+    };
+    document.getElementById("reset").onclick = async () => {
+      const section = document.getElementById("section").value;
+      const label = section === "all" ? "all responses" : section + " responses";
+      if (!confirm("Clear " + label + "?")) return;
+      await Fin411Store.resetSection(section);
+      revealed = false;
+      document.getElementById("reveal").disabled = false;
+      rows = await Fin411Store.getRows();
+      draw();
+    };
+
+    setupJoin();
+    draw();
+    Fin411Store.listenRows((data) => {
+      rows = data;
+      draw();
+    });
+  </script>
+</body>
+</html>
