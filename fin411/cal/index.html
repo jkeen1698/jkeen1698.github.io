@@ -139,6 +139,26 @@
       padding-top: 2.5rem;
     }
     .done h1 { margin-bottom: 0.5rem; }
+    .a-block { margin: 1.35rem 0 1.15rem; }
+    .a-caption {
+      font-size: 0.92rem;
+      color: var(--muted);
+      margin: 0;
+    }
+    .a-value {
+      font-size: 3.4rem;
+      font-weight: 650;
+      color: var(--purple);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+      line-height: 1.05;
+      margin: 0.15rem 0 0.55rem;
+    }
+    .a-note {
+      font-size: 0.92rem;
+      color: var(--muted);
+      margin: 0;
+    }
     .hidden { display: none; }
   </style>
 </head>
@@ -166,6 +186,7 @@
       X: null,
       answers: [],
       busy: false,
+      A: null,
     };
 
     function money(n) {
@@ -185,6 +206,11 @@
       let y = A > 0 ? 2 / A : 2.5;
       y = Math.min(2.5, Math.max(0.15, y));
       return { A, y };
+    }
+
+    function formatA(A) {
+      if (typeof A !== "number" || !Number.isFinite(A)) return "—";
+      return (Math.round(A * 10) / 10).toFixed(1);
     }
 
     function render() {
@@ -218,6 +244,11 @@
           <div class="done">
             <div class="kicker">FIN 411</div>
             <h1>Thanks.</h1>
+            <div class="a-block">
+              <p class="a-caption">Your estimated <em>A</em></p>
+              <div class="a-value">${formatA(state.A)}</div>
+              <p class="a-note">Positive is risk-averse. Near zero is risk-neutral. Negative is risk-seeking.</p>
+            </div>
             <p class="muted">You can put the phone down.</p>
           </div>
         `;
@@ -251,6 +282,7 @@
       state.H = CFG.H0;
       state.step = 0;
       state.answers = [];
+      state.A = null;
       nextX();
     }
 
@@ -278,6 +310,7 @@
     async function finish() {
       const ce = (state.L + state.H) / 2;
       const { A, y } = fromCE(ce);
+      state.A = A;
       state.screen = "done";
       render();
       const payload = {
