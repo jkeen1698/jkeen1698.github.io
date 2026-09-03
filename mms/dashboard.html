@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FIN 411 · M&amp;M mix</title>
+  <style>
+    :root {
+      --purple: #4f2d7f;
+      --ink: #1a1523;
+      --muted: #5c5566;
+      --line: #ddd7e8;
+      --bg: #f4f2f7;
+      --card: #fff;
+      --gold: #b0892e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      padding: 0.85rem 1.1rem;
+      background: var(--card);
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }
+    header h1 { font-size: 1.05rem; margin: 0 0.5rem 0 0; font-weight: 650; }
+    .count { font-variant-numeric: tabular-nums; color: var(--muted); }
+    .sp { flex: 1; }
+    button, select {
+      font: inherit;
+      border-radius: 0.55rem;
+      padding: 0.45rem 0.8rem;
+      border: 1px solid var(--line);
+      background: #fff;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--purple);
+      border-color: var(--purple);
+      color: #fff;
+      font-weight: 650;
+    }
+    button.primary:disabled { opacity: 0.45; cursor: not-allowed; }
+    main {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      min-height: calc(100vh - 58px);
+    }
+    aside {
+      padding: 1rem;
+      border-right: 1px solid var(--line);
+      background: var(--card);
+    }
+    .url {
+      font-size: 0.82rem;
+      word-break: break-all;
+      background: var(--bg);
+      padding: 0.55rem 0.6rem;
+      border-radius: 0.45rem;
+      margin: 0.5rem 0 0;
+    }
+    #qr { display: block; width: 180px; height: 180px; margin: 0.55rem 0 0.7rem; background: #fff; }
+    .stage { padding: 0.8rem 1rem 1rem; }
+    svg { width: 100%; height: calc(100vh - 90px); max-height: 740px; background: #fff; border-radius: 0.7rem; border: 1px solid var(--line); }
+    .legend { font-size: 13px; fill: #1a1523; font-weight: 700; }
+    @media (max-width: 840px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      svg { height: 70vh; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Our guess of the mix</h1>
+    <label>Section
+      <select id="section">
+        <option value="8:00">8:00 a.m.</option>
+        <option value="1:00">1:00 p.m.</option>
+        <option value="all">Both</option>
+      </select>
+    </label>
+    <label>Featured color
+      <select id="feat">
+        <option value="blue">Blue</option>
+        <option value="orange">Orange</option>
+        <option value="green">Green</option>
+        <option value="yellow">Yellow</option>
+        <option value="red">Red</option>
+        <option value="brown">Brown</option>
+      </select>
+    </label>
+    <span class="count" id="count">0 bags</span>
+    <span class="sp"></span>
+    <button type="button" id="reset">Reset section</button>
+    <button type="button" class="primary" id="reveal">Reveal claimed mix</button>
+  </header>
+  <main>
+    <aside>
+      <strong>Students join here</strong>
+      <img id="qr" alt="QR code for student page" />
+      <div class="url" id="join"></div>
+    </aside>
+    <div class="stage">
+      <svg id="chart" viewBox="0 0 900 640" role="img" aria-label="Pooled color mix"></svg>
+    </div>
+  </main>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="store.js"></script>
+  <script>
+    const COLORS = [
+      { id: "blue", label: "Blue", hex: "#1a73c7", factory: 0.24 },
+      { id: "orange", label: "Orange", hex: "#ef7c00", factory: 0.20 },
+      { id: "green", label: "Green", hex: "#3d8c2e", factory: 0.16 },
+      { id: "yellow", label: "Yellow", hex: "#e6b800", factory: 0.14 },
+      { id: "red", label: "Red", hex: "#c62828", factory: 0.13 },
+      { id: "brown", label: "Brown", hex: "#5c3317", factory: 0.13 },
+    ];
+    const PMAX = 0.40;
+    let rows = [];
+    let revealed = false;
+
+    function pool(data) {
+      const tot = Object.fromEntries(COLORS.map((c) => [c.id, 0]));
+      let N = 0;
+      for (const r of data) {
+        N += r.total;
+        COLORS.forEach((c) => { tot[c.id] += r.counts[c.id] || 0; });
+      }
+      const p = {};
+      COLORS.forEach((c) => { p[c.id] = N ? tot[c.id] / N : 0; });
+      return { n: data.length, N, p };
+    }
+
+    function bagP(r, id) {
+      return r.total ? (r.counts[id] || 0) / r.total : 0;
+    }
+
+    function asBags(data) {
+      return (data || []).filter((r) => r && r.counts && typeof r.counts === "object");
+    }
+
+    async function setupJoin() {
+      let url = Fin411Store.studentUrl();
+      if (!Fin411Store.usingCloud()) {
+        try {
+          const res = await fetch("/api/info");
+          if (res.ok) {
+            const info = await res.json();
+            if (info.student_url) url = info.student_url;
+          }
+        } catch (e) { /* file:// fallback */ }
+      }
+      document.getElementById("join").textContent = url;
+      document.getElementById("qr").src =
+        "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" +
+        encodeURIComponent(url);
+    }
+
+    function yBar(p) {
+      const top = 70, bot = 310;
+      return bot - (p / PMAX) * (bot - top);
+    }
+    function xPct(p) {
+      const L = 80, R = 860;
+      return L + (p / PMAX) * (R - L);
+    }
+
+    function draw() {
+      const section = document.getElementById("section").value;
+      const feat = document.getElementById("feat").value;
+      const data = rows.filter((r) => section === "all" || r.section === section);
+      const { n, N, p } = pool(data);
+      const featC = COLORS.find((c) => c.id === feat);
+      document.getElementById("count").textContent =
+        n + " bag" + (n === 1 ? "" : "s") + " · " + N + " candies";
+
+      let bars = "";
+      COLORS.forEach((c, i) => {
+        const x = 70 + i * 135;
+        const y = yBar(p[c.id]);
+        const bot = 310;
+        const h = Math.max(0, bot - y);
+        bars += `<rect x="${x}" y="${y}" width="72" height="${h}" fill="${c.hex}" />`;
+        bars += `<text x="${x + 36}" y="332" text-anchor="middle" class="legend">${c.label}</text>`;
+        bars += `<text x="${x + 36}" y="${y - 8}" text-anchor="middle" class="legend">${n ? Math.round(p[c.id] * 1000) / 10 : "—"}%</text>`;
+        if (revealed) {
+          const fy = yBar(c.factory);
+          bars += `<line x1="${x - 6}" y1="${fy}" x2="${x + 78}" y2="${fy}" stroke="#111" stroke-width="2.5" />`;
+        }
+      });
+
+      let ticks = "";
+      for (const t of [0, 0.10, 0.20, 0.30, 0.40]) {
+        const y = yBar(t);
+        ticks += `<line x1="52" y1="${y}" x2="58" y2="${y}" stroke="#111" stroke-width="2" />`;
+        ticks += `<text x="48" y="${y + 4}" text-anchor="end" class="legend">${Math.round(t * 100)}%</text>`;
+      }
+
+      const stripTop = 400, stripBot = 500;
+      let strip = `<line x1="80" y1="${stripBot}" x2="860" y2="${stripBot}" stroke="#111" stroke-width="2.5" />`;
+      for (const t of [0, 0.10, 0.20, 0.30, 0.40]) {
+        strip += `<line x1="${xPct(t)}" y1="${stripBot}" x2="${xPct(t)}" y2="${stripBot + 7}" stroke="#111" stroke-width="2" />`;
+        strip += `<text x="${xPct(t)}" y="${stripBot + 24}" text-anchor="middle" class="legend">${Math.round(t * 100)}%</text>`;
+      }
+      data.forEach((r, i) => {
+        const x = xPct(Math.min(bagP(r, feat), PMAX));
+        const y = stripTop + 30 + (i % 7) * 9;
+        strip += `<circle cx="${x}" cy="${y}" r="4.5" fill="#111" />`;
+      });
+      if (n) {
+        const gx = xPct(Math.min(p[feat], PMAX));
+        strip += `<line x1="${gx}" y1="${stripTop + 12}" x2="${gx}" y2="${stripBot}" stroke="#b0892e" stroke-width="3" />`;
+      }
+      if (revealed) {
+        const fx = xPct(featC.factory);
+        strip += `<line x1="${fx}" y1="${stripTop + 12}" x2="${fx}" y2="${stripBot}" stroke="#111" stroke-width="2" stroke-dasharray="6 4" />`;
+      }
+
+      let errors = "";
+      if (revealed && n) {
+        const bagErr = data.reduce((s, r) => s + Math.abs(bagP(r, feat) - featC.factory), 0) / n;
+        const poolErr = Math.abs(p[feat] - featC.factory);
+        errors = `<text x="80" y="610" class="legend">Typical bag vs claimed ${featC.label}: ${(bagErr * 100).toFixed(1)} pp</text>
+          <text x="500" y="610" class="legend">Class pool vs claimed ${featC.label}: ${(poolErr * 100).toFixed(1)} pp</text>`;
+      }
+
+      document.getElementById("chart").innerHTML = `
+        <text x="450" y="32" text-anchor="middle" font-size="16" font-weight="700">Our current guess of the unknown mix</text>
+        <line x1="58" y1="70" x2="58" y2="310" stroke="#111" stroke-width="2.5" />
+        <line x1="58" y1="310" x2="860" y2="310" stroke="#111" stroke-width="2.5" />
+        ${ticks}
+        ${bars}
+        <text x="450" y="368" text-anchor="middle" class="legend">${featC.label} in each bag</text>
+        ${strip}
+        <line x1="80" y1="${stripTop + 12}" x2="80" y2="${stripBot}" stroke="#111" stroke-width="2" />
+        ${errors}
+      `;
+    }
+
+    document.getElementById("section").onchange = draw;
+    document.getElementById("feat").onchange = draw;
+    document.getElementById("reveal").onclick = () => {
+      revealed = true;
+      document.getElementById("reveal").disabled = true;
+      draw();
+    };
+    document.getElementById("reset").onclick = async () => {
+      const section = document.getElementById("section").value;
+      if (!confirm(section === "all" ? "Clear all bags?" : "Clear " + section + " bags?")) return;
+      await Fin411Store.resetSection(section);
+      revealed = false;
+      document.getElementById("reveal").disabled = false;
+      rows = asBags(await Fin411Store.getRows());
+      draw();
+    };
+
+    setupJoin();
+    draw();
+    Fin411Store.listenRows((data) => {
+      rows = asBags(data);
+      draw();
+    });
+  </script>
+</body>
+</html>
